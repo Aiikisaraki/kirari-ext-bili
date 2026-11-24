@@ -1,0 +1,27 @@
+{
+  "id": "com.akisaki.bili.explore",
+  "name": "B站探索（只读 + 见闻记忆）",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "让 Kirari 自己逛 B 站：热门/搜索/字幕/评论只读，见闻经隐私 scrub 后写入统一记忆。零他人信息，发送操作未开放。",
+  "engine": {
+    "runtime": "sidecar",
+    "protocol": "jsonrpc-stdio@1",
+    "launch": "host-node",
+    "command": "bin/server.cjs",
+    "requestTimeoutMs": 30000,
+    "idleTimeoutMs": 300000
+  },
+  "contributions": [
+    {
+      "type": "service",
+      "id": "bili.explore",
+      "title": "B站探索"
+    }
+  ],
+  "permissions": [],
+  "resources": {
+    "minRamMb": 128,
+    "gpuRecommended": false
+  }
+}
