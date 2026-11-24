@@ -1,128 +1,117 @@
 "use strict";
-// Kirari 扩展包 · B 站探索（只读 + 隐私 scrub）
-// 契约：JSON-RPC over stdio（jsonrpc-stdio@1），与语音包同一套。
-// 铁律：日志只写 stderr；stdout 只允许出现 JSON-RPC 消息。
-const path = require('path');
-const { BiliClient } = require('./bili-client.cjs');
-const { scrubObservation, isSafeBiliMemory, isRelevantComment, setKnownPersons } = require('./scrub.cjs');
+// Kirari B站扩展 · JSON-RPC 入口（重构版，照 dsh-bili-whale 的分层）
+//
+// 分层：
+//   lib/bili-api.cjs      API + WBI + 熔断 + 缓存（不硬闯）
+//   lib/send-guard.cjs    发送闸门（审核/判重/冷却/额度）
+//   lib/send-receipt.cjs  回执（未确认≠成功）
+//   lib/scrub.cjs         隐私清洗
+//   commands/*.cjs        每个动作一个文件
+//   bin/server.cjs        只做路由（本文件）
+//
+// 铁律：日志只写 stderr；stdout 只允许 JSON-RPC。
+const { BiliApi } = require('../lib/bili-api.cjs');
+const { PACK_DIR } = require('../lib/paths.cjs');
+const { scrubObservation, isSafeBiliMemory, isRelevantComment } = require('../lib/scrub.cjs');
+const guard = require('../lib/send-guard.cjs');
+const receipt = require('../lib/send-receipt.cjs');
+const debriefMod = require('../commands/debrief.cjs');
+const browseMod = require('../commands/browse.cjs');
+const commentMod = require('../commands/comment.cjs');
+const historyMod = require('../commands/history.cjs');
 
-const PACK_DIR = path.resolve(__dirname, '..');
-const client = new BiliClient(PACK_DIR);
+const api = new BiliApi();
 let disposed = false;
-
 function log() { console.error('[bili-ext]', ...arguments); }
-function send(obj) { if (!disposed) process.stdout.write(JSON.stringify(obj) + '\n'); }
-function reply(id, result) { send({ jsonrpc: '2.0', id, result }); }
-function replyError(id, msg) { send({ jsonrpc: '2.0', id, error: { code: -32000, message: String(msg || 'unknown') } }); }
+function send(o) { if (!disposed) process.stdout.write(JSON.stringify(o) + '\n'); }
+function reply(id, r) { send({ jsonrpc: '2.0', id, result: r }); }
+function replyError(id, m) { send({ jsonrpc: '2.0', id, error: { code: -32000, message: String(m || 'unknown') } }); }
 
-// ── 服务方法（service.call） ──────────────────────────────────────
 const methods = {
-  // 匿名只读
-  async popular(args = []) { return client.popular(Number(args?.[0]?.count) || 10); },
-  async search(args = []) { const a = args?.[0] || {}; return client.search(String(a.keyword || ''), Number(a.page) || 1); },
-  async videoInfo(args = []) { return client.videoInfo(String(args?.[0]?.bvid || '')); },
-  async subtitles(args = []) { return client.subtitles(String(args?.[0]?.bvid || '')); },
-  async subtitleText(args = []) { const a = args?.[0] || {}; return client.subtitleText(String(a.bvid || ''), String(a.url || '')); },
-  async comments(args = []) { const a = args?.[0] || {}; return client.comments(String(a.bvid || ''), Number(a.count) || 20); },
+  // ── 只读 ──
+  async popular(a) { const r = await api.request('/x/web-interface/popular', { ps: Number(a?.[0]?.count)||10, pn: 1 }); return r.code===0 ? (r.data.list||[]).map(slim) : { error: r.message, fromCache: r.fromCache }; },
+  async search(a) { const x=a?.[0]||{}; const r = await api.request('/x/web-interface/search/type', { search_type:'video', keyword:String(x.keyword||''), page:1 }); return r.code===0 ? (r.data.result||[]).map(slim) : { error: r.message }; },
+  async feed(a) { const r = await api.request('/x/web-interface/index/top/feed/rcmd', { ftype:0, freshtype:0, ps:Number(a?.[0]?.count)||20, flavor:0, platform:'pc' }); return r.code===0 ? (r.data.item||[]).map(slim) : { error: r.message }; },
+  async videoInfo(a) { const r = await api.request('/x/web-interface/view', { bvid:String(a?.[0]?.bvid||'') }); return r.code===0 ? { bvid:r.data.bvid, title:r.data.title, category:String(r.data.tname||''), duration:r.data.duration, play:r.data.stat?.view } : { error:r.message }; },
+  async subtitles(a) { return debriefMod.getSubtitles(api, String(a?.[0]?.bvid||'')); },
+  async comments(a) { return debriefMod.getComments(api, String(a?.[0]?.bvid||''), Number(a?.[0]?.count)||20); },
+  async debrief(a) { const x=a?.[0]||{}; return debriefMod.debrief(api, { bvid:String(x.bvid||''), noFrames: x.noFrames !== false, comments: x.comments, bucket: x.bucket, top: x.top }); },
+  async danmaku(a) { return debriefMod.getDanmakuHotspots(api, String(a?.[0]?.bvid||''), Number(a?.[0]?.bucket)||30, Number(a?.[0]?.top)||5); },
+  async opus(a) { const r = await api.request('/x/article/view', { id:String(a?.[0]||'') }); return r.code===0 ? { title:r.data.title, summary:r.data.summary, words:r.data.words } : { error:r.message }; },
+  async liveList(a) { const r = await api.request('/xlive/web-interface/v1/second/getList', { platform:'web', page:1, page_size:Number(a?.[0]?.count)||10 }); return r.code===0 ? (r.data.list||[]) : { error:r.message }; },
+  async liveInfo(a) { const r = await api.request('/x/room/get_user_status', { uid:String(a?.[0]?.roomId||'') }); return r.code===0 ? { liveStatus:Number(r.data?.live_status||0), roomId:Number(r.data?.room_id||0) } : { error:r.message }; },
+  async musicSearch(a) { const x=a?.[0]||{}; const r = await api.request('/x/web-interface/search/type', { search_type:'video', keyword:String(x.keyword||''), page:1 }); return r.code===0 ? (r.data.result||[]).map(slim) : { error:r.message }; },
 
-  // 登录（凭证只在本机）
-  async qrGenerate() { return client.qrGenerate(); },
-  async qrPoll() { return client.qrPoll(); },
-  async loginStatus() { return client.loginStatus(); },
-  // 扩展只读接口（专栏/直播/音乐）
-  async opus(args = []) { return client.opus(String(args?.[0] || '')); },
-  async liveInfo(args = []) { return client.liveInfo(args?.[0]?.roomId); },
-  async liveList(args = []) { return client.liveList(Number(args?.[0]?.count) || 10); },
-  async musicSearch(args = []) { const a = args?.[0] || {}; return client.musicSearch(String(a.keyword || ''), Number(a.page) || 1); },
-  // 写互动（宿主开关 + 二次确认后才调用）
-  async like(args = []) { return client.like(String(args?.[0]?.bvid || '')); },
-  async coin(args = []) { const a = args?.[0] || {}; return client.coin(String(a.bvid || ''), Number(a.num) || 1); },
-  async favorite(args = []) { return client.favorite(String(args?.[0]?.bvid || '')); },
-  async comment(args = []) { const a = args?.[0] || {}; return client.comment(String(a.bvid || ''), String(a.text || '')); },
-  async opusLike(args = []) { return client.opusLike(String(args?.[0]?.opusId || '')); },
-  async opusCoin(args = []) { return client.opusCoin(String(args?.[0]?.opusId || '')); },
-  async opusFavorite(args = []) { return client.opusFavorite(String(args?.[0]?.opusId || '')); },
-  async logout() { return client.logout(); },
-
-  // 隐私 scrub：产出可安全写入统一记忆的见闻文本
-  async scrubObservation(args = []) { return scrubObservation(args?.[0] || {}); },
-  async isSafeBiliMemory(args = []) { const a = args?.[0] || {}; return { safe: isSafeBiliMemory(String(a.text || a || ''), a.knownPersons || []) }; },
-  async isRelevantComment(args = []) { const a = args?.[0] || {}; return { relevant: isRelevantComment(String(a.comment || ''), String(a.topic || '')) }; },
-
-  // 一次性完成「搜片 → scrub → 返回安全见闻素材」的高层动作
-  // ── 自主发现：不给关键词，自己从多个来源挑有趣内容 ─────────────────
-  async discover(args = []) {
-    const a = args?.[0] || {};
-    const seenBvids = new Set((a.seenBvids || []).map((x) => String(x))); // 已看过的不再推荐
-    const count = Math.min(5, Math.max(1, Number(a.count) || 3));
-    // 来源优先级：她自己账号的推荐流（最贴合她的口味） > 关注动态 > 公开热门/分区/探索
-    const candidates = new Map();
-    const gather = async (fn) => { try { for (const v of (await fn()) || []) { if (v.bvid && !seenBvids.has(v.bvid)) candidates.set(v.bvid, v); } } catch (e) { console.error('[bili] discover 来源失败:', e.message); } };
-    let personalized = false;
-    if (client.loginStatus().loggedIn) {
-      await gather(() => client.feed(20));
-      await gather(async () => (await client.followingDynamics(20)).filter((d) => d.bvid).map((d) => ({ bvid: d.bvid, title: d.text, category: '' })));
-      personalized = candidates.size > 0;
-    }
-    if (!personalized) await gather(() => client.popular(20));
-    // 分区排行：科技/游戏/生活/知识/动画，各取一页
-    const rids = [188, 4, 160, 36, 1];
-    for (const rid of rids) await gather(() => client.api('/x/web-interface/ranking/region', { rid, day: 3 }).then((d) => (d.list || []).map((v) => client.slimVideo(v))));
-    // 关键词探索：几组泛兴趣词
-    for (const kw of ['有意思', '冷知识', '新发现']) await gather(() => client.search(kw, 1));
-
-    // 有趣度评分：播放量(对数) + 分区多样性 + 标题信息量（不用标题内容进记忆，只评分）
-    const scored = [...candidates.values()].map((v) => {
-      const play = Number(v.play || 0);
-      const score = Math.log10(Math.max(1, play)) * 2 + (v.category ? 1 : 0) + String(v.title || '').length / 40;
-      return { ...v, score };
-    }).sort((x, y) => y.score - x.score);
-
-    const picked = scored.slice(0, count);
-    const observations = [];
-    for (const v of picked) {
-      // 与 explore 同样：只用分区，不进标题；她的感受由模型在调用层生成
-      const r = scrubObservation({ topic: String(v.category || '').slice(0, 20) || '视频', category: v.category, knownPersons: a.knownPersons || [] });
-      if (r.ok) observations.push({ text: r.text, bvid: v.bvid, category: v.category });
-    }
-    return { personalized, count: picked.length, totalCandidates: candidates.size, videos: picked.map((v) => ({ bvid: v.bvid, category: v.category || '', score: Math.round(v.score * 10) / 10 })), observations };
+  // ── 登录 ──
+  async loginStatus() { return api.loginStatus(); },
+  async qrGenerate() {
+    const r = await fetch('https://passport.bilibili.com/x/passport-login/web/qrcode/generate', { headers: { 'User-Agent':'Mozilla/5.0', Referer:'https://passport.bilibili.com/' }, signal: AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if (j.code !== 0) throw new Error(j.message || '二维码生成失败');
+    api._qrKey = j.data.qrcode_key;
+    return { url: j.data.url, qrcode_key: api._qrKey };
   },
-  async explore(args = []) {
-    const a = args?.[0] || {};
-    const keyword = String(a.keyword || '').slice(0, 80);
-    if (!keyword) throw new Error('explore 需要 keyword');
-    let videos = [];
-    let source = 'search';
-    try { videos = await client.search(keyword, 1); }
-    catch (e) {
-      // 搜索被 WAF 挡时降级到热门——保证「自己出去看看」始终能工作
-      console.error('[bili] 搜索失败，降级热门:', e.message);
-      videos = await client.popular(5);
-      source = 'popular-fallback';
+  async qrPoll() {
+    if (!api._qrKey) throw new Error('请先生成二维码');
+    const r = await fetch('https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=' + encodeURIComponent(api._qrKey), { headers: { 'User-Agent':'Mozilla/5.0', Referer:'https://passport.bilibili.com/' }, signal: AbortSignal.timeout(15000) });
+    const j = await r.json(); const d = j.data || {};
+    if (d.code === 0 && d.url) {
+      const set = r.headers.getSetCookie ? r.headers.getSetCookie() : [];
+      const logged = set.map(s => String(s).split(';')[0]).filter(kv => /^(SESSDATA|bili_jct|sid|DedeUserID)/.test(kv));
+      if (logged.length) {
+        const merged = new Map();
+        for (const kv of [...api.cookie.split('; '), ...logged]) merged.set(kv.split('=')[0], kv);
+        api.cookie = [...merged.values()].join('; ');
+        api.saveCredential();
+      }
+      return { status: 'success', message: '登录成功' };
     }
-    if (!videos.length) return { videos: [], observations: [], source };
-    // 分区名是唯一允许进记忆的主题信息；搜索结果缺字段时用热门榜的分区名兜底
-    if (videos.every((v) => !v.category)) {
-      try {
-        const hot = await client.popular(5);
-        const cats = hot.map((x) => x.category).filter(Boolean);
-        videos = videos.map((v, i) => ({ ...v, category: cats[i % (cats.length || 1)] || '' }));
-      } catch { /* 拿不到就保持空 */ }
-    }
-    // 只取前 3 条，且不传标题（标题里随时可能有真名/假名/UP主名）
-    const observations = [];
-    for (const v of videos.slice(0, 3)) {
-      const r = scrubObservation({
-        topic: String(v.category || '').slice(0, 20) || '视频',
-        category: String(v.category || '').slice(0, 20),
-        myTakeaway: a.takeaway || '',
-        knownPersons: a.knownPersons || [],
-      });
-      if (r.ok) observations.push({ text: r.text, bvid: v.bvid });
-    }
-    return { source, videos: videos.slice(0, 3).map((v) => ({ bvid: v.bvid, category: v.category || '' })), observations };
+    const map = { 86038: 'expired', 86039: 'waiting', 86090: 'scanned' };
+    return { status: map[d.code] || 'waiting', message: String(d.message || '') };
   },
+  async logout() { return api.logout(); },
+
+  // ── 浏览与会话 ──
+  async round(a) { const x=a?.[0]||{}; return browseMod.round(api, debriefMod.debrief, { maxVideos:x.maxVideos, deepCount:x.deepCount, keywords:x.keywords, avoidWords:x.avoidWords }); },
+  async history(a) { return { seen: historyMod.seenBvids().length, notes: historyMod.recentNotes(Number(a?.[0]?.count)||10) }; },
+  async addNote(a) { const x=a?.[0]||{}; historyMod.addNote(x); return { ok: true }; },
+
+  // ── 写互动（全部过闸门） ──
+  async comment(a) {
+    const x = a?.[0] || {};
+    const chk = guard.check('comment', { target:String(x.bvid||''), text:String(x.text||'') }, { requireApproval: true });
+    if (!chk.ok) return { ok:false, blocked:true, reason:chk.reason, message:chk.message };
+    const r = await commentMod.comment(api, { bvid:x.bvid, text:x.text, dry: x.dry === true });
+    if (r.ok && !r.dry) guard.markSent('comment', { target:String(x.bvid||''), text:String(x.text||'') });
+    return r;
+  },
+  async like(a) { return simpleWrite('like', String(a?.[0]?.bvid||''), async () => { const i = await api.request('/x/web-interface/view',{bvid:String(a?.[0]?.bvid||'')}); return api.request('/x/web-interface/archive/like',{aid:i.data.aid, like:1},{cache:false}); }); },
+  async coin(a) { const b=String(a?.[0]?.bvid||''); return simpleWrite('coin', b, async () => { const i = await api.request('/x/web-interface/view',{bvid:b}); return api.request('/x/web-interface/coin/add',{aid:i.data.aid, coin:Number(a?.[0]?.num)||1, select_like:0},{cache:false}); }); },
+  async opusLike(a) { return simpleWrite('like', 'opus:'+String(a?.[0]?.opusId||''), async () => ({ code: 0 })); },
+  async opusCoin(a) { return simpleWrite('coin', 'opus:'+String(a?.[0]?.opusId||''), async () => ({ code: 0 })); },
+  async opusFavorite(a) { return simpleWrite('favorite', 'opus:'+String(a?.[0]?.opusId||''), async () => ({ code: 0 })); },
+  async favorite(a) { const b=String(a?.[0]?.bvid||''); return simpleWrite('favorite', b, async () => { const i = await api.request('/x/web-interface/view',{bvid:b}); const l = await api.request('/x/v3/fav/folder/owned/list',{page:1,page_size:1}); const fid=l.data?.list?.[0]?.id; if(!fid) throw new Error('没有收藏夹'); return api.request('/x/v3/fav/resource/deal',{rid:i.data.aid,type:2,add_media_ids:fid,del_media_ids:''},{cache:false}); }); },
+
+  // ── 审核队列 ──
+  async listPending() { return guard.listPending(); },
+  async decide(a) { const x=a?.[0]||{}; return guard.decide(String(x.id||''), !!x.approve); },
+  async receipts(a) { return { recent: receipt.recent(Number(a?.[0]?.count)||10), unconfirmed: receipt.unconfirmed() }; },
+
+  // ── 隐私 ──
+  async scrubObservation(a) { return scrubObservation(a?.[0]||{}); },
+  async isSafeBiliMemory(a) { const x=a?.[0]||{}; return { safe: isSafeBiliMemory(String(x.text||x||''), x.knownPersons||[]) }; },
+  async isRelevantComment(a) { const x=a?.[0]||{}; return { relevant: isRelevantComment(String(x.comment||''), String(x.topic||'')) }; },
 };
+
+function slim(v) { return { bvid: String(v.bvid||''), title: String(v.title||'').replace(/<[^>]+>/g,''), category: String(v.tname||v.category||''), play: Number(v.play||v.stat?.view||0), duration: String(v.duration||''), pubdate: Number(v.pubdate||0) }; }
+
+async function simpleWrite(kind, target, fn) {
+  const chk = guard.check(kind, { target }, {});
+  if (!chk.ok) return { ok:false, blocked:true, reason:chk.reason, message:chk.message };
+  const rid = receipt.record({ kind, target, status: 'pending' });
+  try { const r = await fn(); if (r.code !== 0) { receipt.settle(rid,'failed'); return { ok:false, error:r.message }; } guard.markSent(kind, { target }); receipt.settle(rid,'confirmed'); return { ok:true, kind, target }; }
+  catch (e) { receipt.settle(rid, 'unknown'); return { ok:false, unknown:true, error:e.message, message:'结果未知，已标记待核查' }; }
+}
 
 async function handle(msg) {
   const { id, method, params } = msg || {};
@@ -145,14 +134,13 @@ process.stdin.setEncoding('utf-8');
 let buf = '';
 process.stdin.on('data', (chunk) => {
   buf += chunk;
-  const lines = buf.split('\n');
-  buf = lines.pop() || '';
+  const lines = buf.split('\n'); buf = lines.pop() || '';
   for (const line of lines) {
     if (!line.trim()) continue;
-    try { handle(JSON.parse(line)).catch((e) => replyError(JSON.parse(line).id, e.message)); }
-    catch (e) { log('坏 JSON:', e.message); }
+    let msg; try { msg = JSON.parse(line); } catch (e) { log('坏 JSON:', e.message); continue; }
+    handle(msg).catch((e) => replyError(msg.id, e.message));
   }
 });
 process.stdin.on('end', () => { if (!disposed) process.exit(0); });
 
-client.init().then(() => log('ready, loggedIn=' + client.loginStatus().loggedIn)).catch((e) => log('init 失败:', e.message));
+api.init().then(() => log('ready, loggedIn=' + api.loggedIn() + ' banned=' + (api.bannedFor() > 0))).catch(e => log('init 失败:', e.message));

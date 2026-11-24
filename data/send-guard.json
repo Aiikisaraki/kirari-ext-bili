@@ -1,0 +1,53 @@
+{
+  "sent": {
+    "like:opus:": 1795539200350,
+    "coin:opus:": 1795539200371,
+    "favorite:opus:": 1795539200373
+  },
+  "lastAt": {
+    "like": 1795539200350,
+    "coin": 1795539200371,
+    "favorite": 1795539200373
+  },
+  "daily": {
+    "2026-11-25": {
+      "like": 1,
+      "coin": 1,
+      "favorite": 1
+    }
+  },
+  "pending": [
+    {
+      "id": "p1795539167163858",
+      "key": "comment:",
+      "kind": "comment",
+      "payload": {
+        "target": "",
+        "text": ""
+      },
+      "text": "",
+      "status": "pending",
+      "createdAt": 1795539167163
+    }
+  ],
+  "history": [
+    {
+      "kind": "like",
+      "key": "like:opus:",
+      "at": 1795539200350,
+      "text": ""
+    },
+    {
+      "kind": "coin",
+      "key": "coin:opus:",
+      "at": 1795539200371,
+      "text": ""
+    },
+    {
+      "kind": "favorite",
+      "key": "favorite:opus:",
+      "at": 1795539200373,
+      "text": ""
+    }
+  ]
+}
