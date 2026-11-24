@@ -1,0 +1,4 @@
+
+# 运行时状态（缓存/回执/凭证），不入库
+data/
+credentials.json
