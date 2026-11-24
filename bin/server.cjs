@@ -19,6 +19,11 @@ const debriefMod = require('../commands/debrief.cjs');
 const browseMod = require('../commands/browse.cjs');
 const commentMod = require('../commands/comment.cjs');
 const historyMod = require('../commands/history.cjs');
+const affect = require('../lib/affect.cjs');
+const diary = require('../lib/diary.cjs');
+const memoryStore = require('../lib/memory-store.cjs');
+const { watchVideo } = require('../commands/watch.cjs');
+const notes = require('../commands/notes.cjs');
 
 const api = new BiliApi();
 let disposed = false;
@@ -96,6 +101,33 @@ const methods = {
   async listPending() { return guard.listPending(); },
   async decide(a) { const x=a?.[0]||{}; return guard.decide(String(x.id||''), !!x.approve); },
   async receipts(a) { return { recent: receipt.recent(Number(a?.[0]?.count)||10), unconfirmed: receipt.unconfirmed() }; },
+
+  // ── 心情/分享欲（affect）──
+  async affect(a) {
+    const x = a?.[0] || {};
+    if (x.experiences) {
+      affect.recordExperiences(Array.isArray(x.experiences) ? x.experiences : [x.experiences]);
+    }
+    const st = affect.getAffect();
+    return { ok: true, state: st, block: affect.buildAffectBlock(st, Date.now()), shouldShare: affect.shouldShare(st, Date.now()) };
+  },
+
+  // ── 两本日记 ──
+  async diaryAddEvent(a) { const x = a?.[0] || {}; diary.addEvent(x); return { ok: true }; },
+  async diaryBuildPrompt(a) { const x = a?.[0] || {}; const ev = x.days ? diary.eventsSince(x.days * 86400000) : diary.listEvents(); return diary.buildDiaryPrompt(ev, String(x.date || ''), String(x.visibility || 'public')); },
+  async diaryCommit(a) { const x = a?.[0] || {}; diary.commitDiary(String(x.date || ''), String(x.publicText || ''), String(x.privateText || '')); return { ok: true }; },
+  async diaryShow(a) { const x = a?.[0] || {}; return { ok: true, text: diary.show(String(x.which || 'public'), Number(x.days) || 1) }; },
+
+  // ── 有来源记忆（notes）──
+  async notesAdd(a) { const x = a?.[0] || {}; return notes.add(x); },
+  async notesRecall(a) { const x = a?.[0] || {}; return notes.recall({ keywords: x.keywords || [] }); },
+  async notesStats(a) { return notes.stats(); },
+
+  // ── 真看画面（watch）──
+  async watch(a) { const x = a?.[0] || {}; return watchVideo(api, { bvid: String(x.bvid || '') }); },
+
+  // ── 生物钟（查询；调度常驻在宿主侧 capability，见 INTEGRATION-PLAN） ──
+  async biolock(a) { const x = a?.[0] || {}; const bl = require('../lib/biolock.cjs'); return { ok: true, state: bl.readState ? bl.readState() : bl.loadState ? bl.loadState() : null }; },
 
   // ── 隐私 ──
   async scrubObservation(a) { return scrubObservation(a?.[0]||{}); },
