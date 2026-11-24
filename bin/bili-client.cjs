@@ -153,6 +153,23 @@ class BiliClient {
     } catch (e) { console.error('[bili] 凭证保存失败:', e.message); }
   }
 
+  // ── 登录账号的个性化推荐（她自己账号看到的） ────────────────────
+  async feed(count = 20) {
+    await this.ensureLogin();
+    const d = await this.api('/x/web-interface/index/top/feed/rcmd', { ftype: 0, freshtype: 0, ps: Math.min(30, Math.max(1, count)), flavor: 0, platform: 'pc', y_num: 6 });
+    return (d.item || []).map((v) => this.slimVideo(v)).filter((v) => v.bvid);
+  }
+  async followingDynamics(count = 20) {
+    await this.ensureLogin();
+    const d = await this.api('/x/polymer/web-dynamic/v1/feed/all', { timezone_offset: -480, page: 1, features: 'itemOpusStyle' });
+    const items = (d?.items || []).slice(0, count);
+    return items.map((it) => {
+      const mod = it.modules?.module_dynamic || {};
+      const desc = mod.desc?.text || '';
+      const arc = mod.major?.archive;
+      return { type: String(it.type || ''), text: String(desc).slice(0, 120), bvid: String(arc?.bvid || '') };
+    });
+  }
   // ── 扩展只读能力（接口齐备，可不用但不能没有） ──────────────────
   // 文字专栏（Opus）：B站专栏文章详情
   async opus(opusId) {

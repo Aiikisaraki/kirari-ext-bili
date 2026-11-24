@@ -50,6 +50,43 @@ const methods = {
   async isRelevantComment(args = []) { const a = args?.[0] || {}; return { relevant: isRelevantComment(String(a.comment || ''), String(a.topic || '')) }; },
 
   // 一次性完成「搜片 → scrub → 返回安全见闻素材」的高层动作
+  // ── 自主发现：不给关键词，自己从多个来源挑有趣内容 ─────────────────
+  async discover(args = []) {
+    const a = args?.[0] || {};
+    const seenBvids = new Set((a.seenBvids || []).map((x) => String(x))); // 已看过的不再推荐
+    const count = Math.min(5, Math.max(1, Number(a.count) || 3));
+    // 来源优先级：她自己账号的推荐流（最贴合她的口味） > 关注动态 > 公开热门/分区/探索
+    const candidates = new Map();
+    const gather = async (fn) => { try { for (const v of (await fn()) || []) { if (v.bvid && !seenBvids.has(v.bvid)) candidates.set(v.bvid, v); } } catch (e) { console.error('[bili] discover 来源失败:', e.message); } };
+    let personalized = false;
+    if (client.loginStatus().loggedIn) {
+      await gather(() => client.feed(20));
+      await gather(async () => (await client.followingDynamics(20)).filter((d) => d.bvid).map((d) => ({ bvid: d.bvid, title: d.text, category: '' })));
+      personalized = candidates.size > 0;
+    }
+    if (!personalized) await gather(() => client.popular(20));
+    // 分区排行：科技/游戏/生活/知识/动画，各取一页
+    const rids = [188, 4, 160, 36, 1];
+    for (const rid of rids) await gather(() => client.api('/x/web-interface/ranking/region', { rid, day: 3 }).then((d) => (d.list || []).map((v) => client.slimVideo(v))));
+    // 关键词探索：几组泛兴趣词
+    for (const kw of ['有意思', '冷知识', '新发现']) await gather(() => client.search(kw, 1));
+
+    // 有趣度评分：播放量(对数) + 分区多样性 + 标题信息量（不用标题内容进记忆，只评分）
+    const scored = [...candidates.values()].map((v) => {
+      const play = Number(v.play || 0);
+      const score = Math.log10(Math.max(1, play)) * 2 + (v.category ? 1 : 0) + String(v.title || '').length / 40;
+      return { ...v, score };
+    }).sort((x, y) => y.score - x.score);
+
+    const picked = scored.slice(0, count);
+    const observations = [];
+    for (const v of picked) {
+      // 与 explore 同样：只用分区，不进标题；她的感受由模型在调用层生成
+      const r = scrubObservation({ topic: String(v.category || '').slice(0, 20) || '视频', category: v.category, knownPersons: a.knownPersons || [] });
+      if (r.ok) observations.push({ text: r.text, bvid: v.bvid, category: v.category });
+    }
+    return { personalized, count: picked.length, totalCandidates: candidates.size, videos: picked.map((v) => ({ bvid: v.bvid, category: v.category || '', score: Math.round(v.score * 10) / 10 })), observations };
+  },
   async explore(args = []) {
     const a = args?.[0] || {};
     const keyword = String(a.keyword || '').slice(0, 80);
