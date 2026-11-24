@@ -34,6 +34,12 @@ try {
   const hello = await call('host.hello');
   check('handshake', hello?.pack === 'com.akisaki.bili.explore', JSON.stringify(hello));
 
+  // 接口齐备性：专栏/直播/音乐/互动方法都应在（可不用但不能没有）
+  for (const m of ['opus','liveInfo','liveList','musicSearch','like','coin','favorite','comment','opusLike','opusCoin','opusFavorite']) {
+    try { await svc(m, [{}]); check('interface ' + m, true, 'callable'); }
+    catch (e) { check('interface ' + m, !/未知方法/.test(e.message), e.message.slice(0,40)); }
+  }
+
   const login = await svc('loginStatus');
   check('loginStatus', typeof login.loggedIn === 'boolean', JSON.stringify(login));
 

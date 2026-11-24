@@ -29,6 +29,19 @@ const methods = {
   async qrGenerate() { return client.qrGenerate(); },
   async qrPoll() { return client.qrPoll(); },
   async loginStatus() { return client.loginStatus(); },
+  // 扩展只读接口（专栏/直播/音乐）
+  async opus(args = []) { return client.opus(String(args?.[0] || '')); },
+  async liveInfo(args = []) { return client.liveInfo(args?.[0]?.roomId); },
+  async liveList(args = []) { return client.liveList(Number(args?.[0]?.count) || 10); },
+  async musicSearch(args = []) { const a = args?.[0] || {}; return client.musicSearch(String(a.keyword || ''), Number(a.page) || 1); },
+  // 写互动（宿主开关 + 二次确认后才调用）
+  async like(args = []) { return client.like(String(args?.[0]?.bvid || '')); },
+  async coin(args = []) { const a = args?.[0] || {}; return client.coin(String(a.bvid || ''), Number(a.num) || 1); },
+  async favorite(args = []) { return client.favorite(String(args?.[0]?.bvid || '')); },
+  async comment(args = []) { const a = args?.[0] || {}; return client.comment(String(a.bvid || ''), String(a.text || '')); },
+  async opusLike(args = []) { return client.opusLike(String(args?.[0]?.opusId || '')); },
+  async opusCoin(args = []) { return client.opusCoin(String(args?.[0]?.opusId || '')); },
+  async opusFavorite(args = []) { return client.opusFavorite(String(args?.[0]?.opusId || '')); },
   async logout() { return client.logout(); },
 
   // 隐私 scrub：产出可安全写入统一记忆的见闻文本

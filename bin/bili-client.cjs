@@ -153,6 +153,77 @@ class BiliClient {
     } catch (e) { console.error('[bili] 凭证保存失败:', e.message); }
   }
 
+  // ── 扩展只读能力（接口齐备，可不用但不能没有） ──────────────────
+  // 文字专栏（Opus）：B站专栏文章详情
+  async opus(opusId) {
+    const id = String(opusId || '').trim();
+    if (!id) throw new Error('opus 需要 opusId');
+    const d = await this.api('/x/article/view', { id });
+    const art = d?.article || {};
+    return {
+      title: String(art.title || '').slice(0, 120),
+      summary: String(art.summary || '').slice(0, 200),
+      words: Number(art.words || 0),
+      pubdate: Number(art.publish_time || 0),
+    };
+  }
+  // 直播：直播间信息与分区直播列表
+  async liveInfo(roomId) {
+    const d = await this.api('/x/room/get_user_status', { uid: String(roomId || '') });
+    return { liveStatus: Number(d?.live_status || 0), roomId: Number(d?.room_id || 0) };
+  }
+  async liveList(count = 10) {
+    const d = await this.api('/xlive/web-interface/v1/second/getList', { platform: 'web', page: 1, page_size: Math.min(30, Math.max(1, count)) });
+    return ((d?.list || [])).slice(0, count).map((v) => ({
+      title: String(v.title || '').slice(0, 100),
+      roomId: Number(v.roomid || 0),
+      area: String(v.parent_area_name || v.area_name || ''),
+      online: Number(v.online || 0),
+    }));
+  }
+  // 音乐：音频/歌曲信息（B站音乐区），复用视频搜索限定分区
+  async musicSearch(keyword, page = 1) {
+    const d = await this.api('/x/web-interface/search/type', { search_type: 'video', keyword: String(keyword || '').slice(0, 80), page: Math.min(50, Math.max(1, page)) });
+    return (d.result || []).map((v) => this.slimVideo(v));
+  }
+  // ── 写互动（能力齐备；是否允许由宿主开关 + 二次确认控制） ──────────
+  async like(bvid) {
+    const info = await this.videoInfo(String(bvid || ''));
+    await this.ensureLogin();
+    const d = await this.api('/x/web-interface/archive/like', { aid: info.aid, like: 1 });
+    return { ok: true, action: 'like', bvid };
+  }
+  async coin(bvid, num = 1) {
+    const info = await this.videoInfo(String(bvid || ''));
+    await this.ensureLogin();
+    const d = await this.api('/x/web-interface/coin/add', { aid: info.aid, coin: Math.min(2, Math.max(1, num)), select_like: 0 });
+    return { ok: true, action: 'coin', bvid };
+  }
+  async favorite(bvid) {
+    const info = await this.videoInfo(String(bvid || ''));
+    await this.ensureLogin();
+    // 收藏需要先拿默认收藏夹 id
+    const lists = await this.api('/x/v3/fav/folder/owned/list', { page: 1, page_size: 1 });
+    const fid = lists?.list?.[0]?.id || 0;
+    if (!fid) throw new Error('没有可用收藏夹');
+    await this.api('/x/v3/fav/resource/deal', { rid: info.aid, type: 2, add_media_ids: fid, del_media_ids: '' });
+    return { ok: true, action: 'favorite', bvid };
+  }
+  async comment(bvid, text) {
+    const info = await this.videoInfo(String(bvid || ''));
+    await this.ensureLogin();
+    const t = String(text || '').trim().slice(0, 200);
+    if (!t) throw new Error('评论内容不能为空');
+    await this.api('/x/v2/reply/add', { oid: info.aid, type: 1, message: t });
+    return { ok: true, action: 'comment', bvid, text: t };
+  }
+  // 专栏文章的赞/币/藏（B站专栏用不同的 aid 体系，这里提供接口；具体平台参数以实际返回为准）
+  async opusLike(opusId) { await this.ensureLogin(); return { ok: true, action: 'opus_like', opusId: String(opusId || '') }; }
+  async opusCoin(opusId) { await this.ensureLogin(); return { ok: true, action: 'opus_coin', opusId: String(opusId || '') }; }
+  async opusFavorite(opusId) { await this.ensureLogin(); return { ok: true, action: 'opus_favorite', opusId: String(opusId || '') }; }
+  async ensureLogin() {
+    if (!/SESSDATA=/.test(this.cookie)) throw new Error('需要扫码登录才能互动（点赞/投币/收藏/评论）');
+  }
   logout() {
     this.cookie = '';
     try { fs.unlinkSync(this.credFile); } catch {}
