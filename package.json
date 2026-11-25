@@ -1,6 +1,6 @@
 {
   "name": "kirari-ext-bili",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Kirari 扩展包：B站只读探索 + 六路看懂 + 发送闸门（按 dsh-bili-whale 结构重构）",
   "main": "bin/server.cjs",

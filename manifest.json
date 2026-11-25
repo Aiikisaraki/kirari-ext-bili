@@ -1,7 +1,7 @@
 {
   "id": "com.akisaki.bili.explore",
   "name": "B站探索（只读 + 见闻记忆）",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "apiVersion": 1,
   "description": "让 Kirari 自己逛 B 站：六路看懂、有来源的见闻、发送闸门（审核/判重/冷却/额度/回读复核）、零他人隐私。按 dsh-bili-whale 结构重构。",
   "engine": {
