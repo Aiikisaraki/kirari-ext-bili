@@ -24,6 +24,8 @@ const diary = require('../lib/diary.cjs');
 const memoryStore = require('../lib/memory-store.cjs');
 const { watchVideo } = require('../commands/watch.cjs');
 const notes = require('../commands/notes.cjs');
+// discover / explore：0.3.0 重构时丢失，2026-11-25 补回（lib/discover.cjs）
+const discoverMod = require('../lib/discover.cjs');
 
 const api = new BiliApi();
 let disposed = false;
@@ -78,6 +80,12 @@ const methods = {
 
   // ── 浏览与会话 ──
   async round(a) { const x=a?.[0]||{}; return browseMod.round(api, debriefMod.debrief, { maxVideos:x.maxVideos, deepCount:x.deepCount, keywords:x.keywords, avoidWords:x.avoidWords }); },
+
+  // ── 自主发现 / 关键词探索 ──────────────────────────────────────
+  // 宿主侧 biliBiolock.tick() 与 capability 的 discover/explore 都走这里。
+  // 少了这两个方法，每次醒来都是「未知方法：discover」，什么都不读、什么都记不住。
+  async discover(a) { const x = a?.[0] || {}; return discoverMod.discover(api, { count: x.count, seenBvids: x.seenBvids, keywords: x.keywords, knownPersons: x.knownPersons, withDesc: x.withDesc }); },
+  async explore(a) { const x = a?.[0] || {}; return discoverMod.explore(api, { keyword: x.keyword, takeaway: x.takeaway, knownPersons: x.knownPersons }); },
   async history(a) { return { seen: historyMod.seenBvids().length, notes: historyMod.recentNotes(Number(a?.[0]?.count)||10) }; },
   async addNote(a) { const x=a?.[0]||{}; historyMod.addNote(x); return { ok: true }; },
 
@@ -131,7 +139,7 @@ const methods = {
 
   // ── 隐私 ──
   async scrubObservation(a) { return scrubObservation(a?.[0]||{}); },
-  async isSafeBiliMemory(a) { const x=a?.[0]||{}; return { safe: isSafeBiliMemory(String(x.text||x||''), x.knownPersons||[]) }; },
+  async isSafeBiliMemory(a) { const x=a?.[0]||{}; return { safe: isSafeBiliMemory(String(x.text||x||''), x.knownPersons||[], x.publicContent === true) }; },
   async isRelevantComment(a) { const x=a?.[0]||{}; return { relevant: isRelevantComment(String(x.comment||''), String(x.topic||'')) }; },
 };
 
