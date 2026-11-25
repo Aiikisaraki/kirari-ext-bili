@@ -35,7 +35,8 @@ try {
   check('handshake', hello?.pack === 'com.akisaki.bili.explore', JSON.stringify(hello));
 
   // 接口齐备性：专栏/直播/音乐/互动方法都应在（可不用但不能没有）
-  for (const m of ['opus','liveInfo','liveList','musicSearch','like','coin','favorite','comment','opusLike','opusCoin','opusFavorite']) {
+  // discover / explore 曾在 0.3.0 重构时丢失，这里把清单扩上，防止再丢一次
+  for (const m of ['opus','liveInfo','liveList','musicSearch','like','coin','favorite','comment','opusLike','opusCoin','opusFavorite','discover','explore']) {
     try { await svc(m, [{}]); check('interface ' + m, true, 'callable'); }
     catch (e) { check('interface ' + m, !/未知方法/.test(e.message), e.message.slice(0,40)); }
   }
@@ -62,6 +63,18 @@ try {
   check('alias 阿X blocked', alias2.safe === false, JSON.stringify(alias2));
   const socialName = await svc('isSafeBiliMemory', [{ text: '张三今天刷到一个视频', knownPersons: ['张三'] }]);
   check('known person blocked', socialName.safe === false, JSON.stringify(socialName));
+
+  // ── publicContent 模式（2026-11-25）────────────────────────────────
+  // 公开作品标题走宽松闸门：不能因为「长达数小时！」「@某某 的合作」这类
+  // 正常内容被判死——那会让记忆退化成「刷到点东西」，等于什么都没记住。
+  const pubTitle = await svc('isSafeBiliMemory', [{ text: '刷到《长达数小时！》的视频', publicContent: true }]);
+  check('publicContent 放行正常标题', pubTitle.safe === true, JSON.stringify(pubTitle));
+  const pubPhone = await svc('isSafeBiliMemory', [{ text: '打我电话 13800138000', publicContent: true }]);
+  check('publicContent 仍拦手机号', pubPhone.safe === false, JSON.stringify(pubPhone));
+  const pubKnown = await svc('isSafeBiliMemory', [{ text: '和小美一起看视频', knownPersons: ['小美'], publicContent: true }]);
+  check('publicContent 仍拦熟人姓名', pubKnown.safe === false, JSON.stringify(pubKnown));
+  const pri = await svc('scrubObservation', [{ title: '影视杂谈：聊聊那些年', category: '影视' }]);
+  check('scrubObservation 保留标题', pri.ok === true && String(pri.text || '').indexOf('影视杂谈') >= 0, String(pri.text || pri.reason));
 
   const noDm = await svc('isRelevantComment', [{ comment: '加我微信私聊', topic: 'AI 视频' }]);
   check('comment rejects DM', noDm.relevant === false, JSON.stringify(noDm));
